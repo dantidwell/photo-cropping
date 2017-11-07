@@ -1,204 +1,263 @@
-/**
- * Grab the canvas and rendering context
- */
-const canvas = document.getElementById("photo-canvas");
-if(!canvas) { 
-  throw 'Canvas not found!';
-}
+const src = '/crop.jpeg';
 
-const ctx = canvas.getContext('2d');
+class Cropper { 
+  constructor(canvas) { 
+    /* width of the crop region "grabber" control */
+    this.CropControlWidth = 14;
+    
+    /* half the width of the crop region "grabber" control */
+    this.HalfCropControlWidth = 7;
+    
+    this.IdentityTransform = { 
+      scaleX: 1, 
+      skewX: 0, 
+      translateX: 0, 
+      scaleY: 1, 
+      skewY: 0, 
+      translateY: 0 
+    };
 
-const photo = new Image();
+    this.Targets = { 
+      CropControl: 'CropControl',
+      CropRegion: 'CropRegion', 
+      None: 'None'
+    };
+    this.currentTarget = 'None';
 
-let mouseDragAnchor = { 
-  x: 0, 
-  y: 0  
-};
+    this.__resetCurrentTransform();
+    /**
+     * Grab the canvas and rendering context
+     */
+    this.canvas = canvas;
+    if(!this.canvas) { 
+      throw 'Canvas not found!';
+    }
+    if(!this.canvas.getContext)  { 
+      throw 'Supplied element is not a <canvas>.'
+    }
+    
+    /* Canvas mouse event handlers */
+    this.canvas.addEventListener('mousedown', event => this.__handleMouseDown(event));
+    this.canvas.addEventListener('mousemove', event => this.__handleMouseMove(event));
+    this.___handleMouseUp = this.__handleMouseUp.bind(this);
+  }
+  
+  static Create(elemOrId, photoSrc, callback) { 
+    const c = new Cropper(document.getElementById(elemOrId));
 
-const cropRegion = { 
-  x: 10,
-  y: 10, 
-  width: 300,
-  height: 300
-};
-const cropControlWidth = 14;
+    c.photo = new Image();
+  
+    c.photo.onload = function(event) {
+      const clampedWidth = Math.min(c.photo.width, 600);
+      const clampedHeight = clampedWidth * (c.photo.height / c.photo.width);
+    
+      c.canvas.width = clampedWidth
+      c.canvas.height = clampedHeight
+      c.canvas.style.width = `${clampedWidth}px`;
+      c.canvas.style.height = `${clampedHeight}px`;
+    
+      c.cropRegion = { 
+        x: 10,
+        y: 10, 
+        width: 300,
+        height: 300
+      };
+  
+      c.__render();
+  
+      callback(c)
+    };
 
-// clickable targets on the canvas
-const Targets = { 
-  CropControl: 'CropControl',
-  CropRegion: 'CropRegion', 
-  None: 'None'
-};
-let currentTarget = Targets.None;
+    /* start the photo download */
+    c.photo.src = photoSrc;   
+  }
 
-// matrix describing current transform
-let currentTransform = null;
-function _applyCurrentTransform() { 
-  ctx.setTransform(
-    currentTransform[0], 
-    currentTransform[3],
-    currentTransform[1], 
-    currentTransform[4],
-    currentTransform[2], 
-    currentTransform[5]
-  );    
-};
-
-function _resetCurrentTransform() { 
-  currentTransform = [
-    1,0,0,
-    0,1,0,
-    0,0,1
-  ];
-};
-_resetCurrentTransform();
-
-const getRelativeCursor = function(mouseEvent) { 
-  return { 
-    x: mouseEvent.offsetX,
-    y: mouseEvent.offsetY
+  __render() {
+    const ctx = this.canvas.getContext('2d');
+  
+    // clear
+    ctx.save();
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.restore();
+  
+    // draw backing photo
+    ctx.drawImage(this.photo, 0, 0);
+  
+    // draw translucent overlay 
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    ctx.restore();
+  
+    // apply the current transform and draw target photo and crop region
+    ctx.save();
+    this.__applyCurrentTransform(ctx);
+  
+    ctx.drawImage(this.photo, 
+      this.cropRegion.x + this.currentTransform.translateX, 
+      this.cropRegion.y + this.currentTransform.translateY, 
+      this.cropRegion.width*this.currentTransform.scaleX, 
+      this.cropRegion.height*this.currentTransform.scaleY,    
+      this.cropRegion.x, 
+      this.cropRegion.y, 
+      this.cropRegion.width*this.currentTransform.scaleX, 
+      this.cropRegion.height*this.currentTransform.scaleY,    
+    );
+  
+    // crop region and control
+    ctx.fillStyle = 'blue';
+    ctx.strokeStyle = 'blue';
+    ctx.lineWidth = 2;  
+    
+    ctx.strokeRect(
+      this.cropRegion.x, 
+      this.cropRegion.y, 
+      this.cropRegion.width*this.currentTransform.scaleX, 
+      this.cropRegion.height*this.currentTransform.scaleY
+    ); //crop region
+    
+    ctx.fillRect(
+      (this.cropRegion.x + this.cropRegion.width*this.currentTransform.scaleX) - this.CropControlWidth/2, 
+      (this.cropRegion.y + this.cropRegion.height*this.currentTransform.scaleY) - this.HalfCropControlWidth, 
+      this.CropControlWidth, 
+      this.CropControlWidth
+    );
+  
+    ctx.restore();
   };
-};
 
-const pointIsInRect = function(point,rect) {
-  return point.x >= rect.x 
-    && point.x <= (rect.x+rect.width) 
-    && point.y >= rect.y 
-    && point.y <= (rect.y+rect.height);
-};
-
-function transformPoint(point, transform) { 
-  return { 
-    x: point.x*transform[0] + point.y*transform[1] + transform[2],
-    y: point.x*transform[3] + point.y*transform[4] + transform[5]
+  __applyCurrentTransform(ctx) { 
+    ctx.setTransform(
+      1, //this.currentTransform.scaleX, 
+      this.currentTransform.skewY,
+      this.currentTransform.skewX, 
+      1, //this.currentTransform.scaleY,
+      this.currentTransform.translateX, 
+      this.currentTransform.translateY
+    );
   };
-};
 
-/**
- * Main render function
- */
-const render = function() {
-  // clear
-  ctx.save();
-  ctx.fillStyle = 'white';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.restore();
+  __resetCurrentTransform() { 
+    this.currentTransform = Object.assign({}, this.IdentityTransform);
+  };
 
-  // backing photo
-  ctx.drawImage(photo, 0, 0);
+  __getRelativeCursor(mouseEvent) { 
+    return { 
+      x: mouseEvent.offsetX,
+      y: mouseEvent.offsetY
+    };
+  };
 
-  // translucent overlay 
-  ctx.save();
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.restore();
-
-  ctx.save();
-
-  _applyCurrentTransform();
-
-  ctx.drawImage(photo, 
-    cropRegion.x + currentTransform[2], 
-    cropRegion.y + currentTransform[5], 
-    cropRegion.width*currentTransform[0], 
-    cropRegion.height*currentTransform[4],    
-    cropRegion.x, cropRegion.y, cropRegion.width, cropRegion.height,    
-  );
-
-  // crop region and controls
-  ctx.strokeStyle = "aqua";
-  ctx.lineWidth = 2;  
+  __pointIsInCropRegion(point) {
+    return point.x >= this.cropRegion.x 
+      && point.x <= (this.cropRegion.x+this.cropRegion.width) 
+      && point.y >= this.cropRegion.y 
+      && point.y <= (this.cropRegion.y+this.cropRegion.height);
+  };
   
-  ctx.strokeRect(cropRegion.x, cropRegion.y, cropRegion.width, cropRegion.height); //crop region
-  ctx.strokeRect((cropRegion.x + cropRegion.width) - cropControlWidth/2, (cropRegion.y + cropRegion.height) - cropControlWidth/2, cropControlWidth, cropControlWidth); //bottom-right
+  __pointIsInCropControl(point) { 
+    return point.x >= ((this.cropRegion.x+this.cropRegion.width) - this.CropControlWidth/2)
+      &&   point.x <= ((this.cropRegion.x+this.cropRegion.width) + this.CropControlWidth/2) 
+      &&   point.y >= ((this.cropRegion.y+this.cropRegion.height) - this.CropControlWidth/2) 
+      &&   point.y <= ((this.cropRegion.y+this.cropRegion.height) + this.CropControlWidth/2);
+  };
 
-  ctx.restore();
+  __transformPoint(point) { 
+    if(!this.currentTransform) { 
+      return { x: point.x, y: point.y };
+    }
+    const t = this.currentTransform;
+    return { 
+      x: point.x*t.scaleX + point.y*t.skewY + t.translateX,
+      y: point.x*t.skewX + point.y*t.scaleY + t.translateY
+    };
+  };
+
+  __handleMouseMove(event) { 
+    const point = this.__getRelativeCursor(event);
+    
+    if(this.__pointIsInCropControl(point)) { 
+      this.canvas.style.cursor = 'pointer';
+    } else if(this.__pointIsInCropRegion(point)) { 
+      this.canvas.style.cursor = 'move';
+    } else { 
+      this.canvas.style.cursor = 'auto';
+    }
+  
+    if(this.currentTarget === this.Targets.None) { 
+      return;
+    }
+    /* update canvas based on current target, if any */
+    const deltaX = point.x - this.currentTransform.anchor.x;
+    const deltaY = point.y - this.currentTransform.anchor.y;
+    
+    const scaleXY = Math.max(
+      (1 + (deltaX / this.cropRegion.width)), 
+      (1 + (deltaY / this.cropRegion.height)), 
+      0.10
+    ); 
+  
+    switch(this.currentTarget) { 
+      case this.Targets.CropRegion:
+        /* TODO: translate the crop region */
+        this.currentTransform.translateX = deltaX;
+        this.currentTransform.translateY = deltaY;
+        this.__render();
+        break;
+      case this.Targets.CropControl: 
+        this.currentTransform.scaleX = scaleXY;
+        this.currentTransform.scaleY = scaleXY;
+        this.__render();
+      default: 
+        break;
+    }
+  };
+
+  __handleMouseDown(event) { 
+    const point = this.__getRelativeCursor(event);
+  
+    if(this.__pointIsInCropControl(point)) { 
+      this.currentTarget = this.Targets.CropControl;
+    } else if(this.__pointIsInCropRegion(point)) { 
+      this.currentTarget = this.Targets.CropRegion;
+    } else { 
+      this.currentTarget = this.Targets.None;
+    }
+  
+    this.currentTransform.anchor = point;
+    document.addEventListener('mouseup', this.___handleMouseUp);
+  };
+
+  __handleMouseUp(event) { 
+    this.currentTarget = this.Targets.None;
+  
+    const cropRegionAnchor = { 
+      x: this.cropRegion.x + this.currentTransform.translateX, 
+      y: this.cropRegion.y + this.currentTransform.translateY  
+    };
+  
+    const cropRegionSpan = this.__transformPoint({
+      x: this.cropRegion.x+this.cropRegion.width, 
+      y: this.cropRegion.y+this.cropRegion.height
+    });
+    
+    this.cropRegion.x = cropRegionAnchor.x;
+    this.cropRegion.y = cropRegionAnchor.y;
+    this.cropRegion.width = cropRegionSpan.x - cropRegionAnchor.x;
+    this.cropRegion.height = cropRegionSpan.y - cropRegionAnchor.y;
+  
+    /* reset the current transform */
+    this.__resetCurrentTransform();
+    this.__render();
+
+    this.onCropRegionChange && this.onCropRegionChange(Object.assign({}, this.cropRegion));
+
+    document.removeEventListener('mouseup', this.___handleMouseUp);
+  };
 }
 
-/* load the photo */
-photo.onload = function(event) {
-  const clampedWidth = Math.min(photo.width, 600);
-  const clampedHeight = clampedWidth * (photo.height / photo.width);
-
-  canvas.width = clampedWidth
-  canvas.height = clampedHeight
-  canvas.style.width = `${clampedWidth}px`;
-  canvas.style.height = `${clampedHeight}px`;
-
-  render();
-}
-
-photo.onerror = function() { 
-  console.error('Failed to load photo.');
-};
-
-photo.src = src;
-
-/**
- * Canvas mouse event handlers
- */
-
-canvas.addEventListener('mousemove', function(event) { 
-  const point = getRelativeCursor(event);
-  
-  if(pointIsInRect(point, cropRegion)) { 
-    canvas.style.cursor = 'move';
-  } else { 
-    canvas.style.cursor = 'auto';
-  }
-
-  /* update canvas based on current target, if any */
-  const deltaX = point.x - mouseDragAnchor.x;
-  const deltaY = point.y - mouseDragAnchor.y;
-  
-  switch(currentTarget) { 
-    case Targets.CropRegion:
-      /* TODO: translate the crop region */
-      // currentTransform[2] = deltaX;
-      // currentTransform[5] = deltaY;
-      currentTransform[0] = 1 + (deltaX / cropRegion.width); 
-      currentTransform[4] = 1 + (deltaX / cropRegion.width);
-      render();
-      break; 
-    default: 
-      break;
-  }
+let test = null;
+Cropper.Create('photo-canvas', '/crop.jpeg', function(_test) { 
+  test = _test; 
 });
-
-canvas.addEventListener('mousedown', function(event) { 
-  const point = getRelativeCursor(event);
-
-  if(pointIsInRect(point, cropRegion)) { 
-    currentTarget = Targets.CropRegion;
-  } else { 
-    currentTarget = Targets.None;
-  }
-
-  mouseDragAnchor = point;
-})
-
-canvas.addEventListener('mouseup', function(event) { 
-  currentTarget = Targets.None;
-
-  const cropRegionAnchor = transformPoint({ 
-    x: cropRegion.x,
-    y: cropRegion.y
-  }, currentTransform);
-
-  const cropRegionSpan = transformPoint({
-    x: cropRegion.x+cropRegion.width, 
-    y: cropRegion.y+cropRegion.height
-  }, currentTransform);
-  
-  cropRegion.x = cropRegionAnchor.x;
-  cropRegion.y = cropRegionAnchor.y;
-  cropRegion.width = cropRegionSpan.x - cropRegionAnchor.x;
-  cropRegion.height = cropRegionSpan.y - cropRegionAnchor.y;
-  
-
-  /* reset the current transform */
-  _resetCurrentTransform();
-  render();
-});
-
-
